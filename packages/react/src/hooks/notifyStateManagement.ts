@@ -1,68 +1,131 @@
 import type { NotifyClientTypes } from "@walletconnect/notify-client";
 import { useSubscriptionState } from "@web3inbox/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useWeb3InboxClient } from "./web3inboxClient";
+import { HooksReturn } from "../types/hooks";
 
 /**
- * Hook to watch messages of a subscription, and delete them
+ * Hook to watch notifications of a subscription, and delete them
  *
  * @param {string} [account] - Account to get subscriptions messages from, defaulted to current account
  * @param {string} [domain] - Domain to get subscription messages from, defaulted to one set in init.
  */
-export const useMessages = (account?: string, domain?: string) => {
-  const client = useWeb3InboxClient();
+export const useNotifications = (
+  account?: string,
+  domain?: string
+): HooksReturn<
+  {
+    messages: NotifyClientTypes.NotifyMessageRecord[];
+  },
+  {
+    deleteMessage: (id: number) => void;
+  }
+> => {
+  const { data: web3inboxClientData, error: clientError } =
+    useWeb3InboxClient();
   const { messages: messagesTrigger } = useSubscriptionState();
+
   const [messages, setMessages] = useState<
     NotifyClientTypes.NotifyMessageRecord[]
-  >(client?.getMessageHistory(account, domain) ?? []);
+  >(web3inboxClientData?.client.getMessageHistory(account, domain) ?? []);
+
+  const [error, setError] = useState<null | string>(null);
 
   useEffect(() => {
-    if (!client) return;
+    if (!web3inboxClientData) return;
 
-    setMessages(client.getMessageHistory(account));
-  }, [client, messagesTrigger, account, domain]);
+    setMessages(web3inboxClientData.client.getMessageHistory(account));
+  }, [web3inboxClientData, messagesTrigger, account, domain]);
 
   const deleteMessage = useCallback(
-    async (id: number) => {
-      if (client && id) {
-        client.deleteNotifyMessage({ id });
+    (id: number) => {
+      if (web3inboxClientData && id) {
+        try {
+          web3inboxClientData.client.deleteNotifyMessage({ id });
+        } catch (e) {
+          console.error("Failed to delete message", e);
+          setError("Failed to delete message");
+        }
       }
     },
-    [client]
+    [web3inboxClientData]
   );
 
-  return { messages, deleteMessage };
+  const result = useMemo(() => {
+    if (!web3inboxClientData) {
+      return { data: null, error: null, isLoading: true, deleteMessage }
+    }
+
+    if (clientError) {
+      return { data: null, error: clientError, isLoading: false, deleteMessage };
+    }
+
+    if (error) {
+      return {
+        data: null,
+        error: { message: error },
+        isLoading: false,
+        deleteMessage,
+      };
+    }
+
+    return { data: { messages }, error: null, isLoading: false, deleteMessage };
+  }, [web3inboxClientData, clientError, error]);
+
+  return result;
 };
 
 /**
- * Hook to manage a subscription: subscribe, unsubscribe
+ * Hook to manage a subscribe, unsubscribe and get subscription
  *
  * @param {string} [account] - Account to get subscriptions messages from , defaulted to current account
  * @param {string} [domain] - Domain to get subscription messages from, defaulted to one set in init.
  */
-export const useManageSubscription = (account?: string, domain?: string) => {
-  const client = useWeb3InboxClient();
+export const useManageSubscription = (
+  account?: string,
+  domain?: string
+): HooksReturn<
+  {
+    isSubscribed: boolean;
+    isSubscribing: boolean;
+    isUnsubscribing: boolean;
+    subscription: NotifyClientTypes.NotifySubscription | null;
+  },
+  {
+    unsubscribe: () => Promise<void>;
+    subscribe: () => Promise<void>;
+  }
+> => {
+  const { data: web3inboxClientData, error: clientError } =
+    useWeb3InboxClient();
   const { subscriptions: subscriptionsTrigger } = useSubscriptionState();
-  const [isSubscribed, setIsSubscribed] = useState<boolean>(
-    () => client?.isSubscribedToDapp(account, domain) ?? false
-  );
+
+  const [subscription, setSubscription] =
+    useState<NotifyClientTypes.NotifySubscription | null>(
+      web3inboxClientData?.client.getSubscription(account, domain) ?? null
+    );
+
+  const [error, setError] = useState<string | null>(null);
 
   const [isSubscribing, setIsSubscribing] = useState(false);
   const [isUnsubscribing, setIsUnsubscribing] = useState(false);
 
   useEffect(() => {
-    if (!client) return;
+    if (!web3inboxClientData) return;
 
-    setIsSubscribed(client.isSubscribedToDapp(account, domain));
-  }, [client, subscriptionsTrigger, account, domain]);
+    setSubscription(
+      web3inboxClientData.client.getSubscription(account, domain)
+    );
+  }, [web3inboxClientData, subscriptionsTrigger, account, domain]);
 
   const subscribe = useCallback(async () => {
-    if (client) {
+    if (web3inboxClientData) {
       setIsSubscribing(true);
       try {
-        await client.subscribeToDapp(account, domain);
+        await web3inboxClientData.client.subscribeToDapp(account, domain);
       } catch (e) {
         console.error("Failed to subscribe", e);
+        setError("Failed to subscribe");
       } finally {
         setIsSubscribing(false);
       }
@@ -71,15 +134,16 @@ export const useManageSubscription = (account?: string, domain?: string) => {
         "Trying to subscribe before Web3Inbox Client was initialized"
       );
     }
-  }, [client, account, domain]);
+  }, [web3inboxClientData, account, domain]);
 
   const unsubscribe = useCallback(async () => {
-    if (client) {
+    if (web3inboxClientData) {
       setIsUnsubscribing(true);
       try {
-        await client.unsubscribeFromDapp(account, domain);
+        await web3inboxClientData.client.unsubscribeFromDapp(account, domain);
       } catch (e) {
         console.error("Failed to unsubscribe", e);
+        setError("Failed to unsubscribe");
       } finally {
         setIsUnsubscribing(false);
       }
@@ -88,38 +152,56 @@ export const useManageSubscription = (account?: string, domain?: string) => {
         "Trying to unsubscribe before Web3Inbox Client was initialized"
       );
     }
-  }, [client, account, domain]);
+  }, [web3inboxClientData, account, domain]);
 
-  return {
-    subscribe,
-    unsubscribe,
-    isSubscribed,
-    isSubscribing,
-    isUnsubscribing,
-  };
-};
-
-/**
- * Hook to get all subscriptions of an account
- *
- * @param {string} [account] - Account to get subscription for, defaulted to current account
- * @param {string} [domain] - Domain to get subscription for, defaulted to one set in init.
- */
-export const useSubscription = (account?: string, domain?: string) => {
-  const client = useWeb3InboxClient();
-  const { subscriptions: subscriptionsTrigger } = useSubscriptionState();
-  const [subscription, setSubscription] =
-    useState<NotifyClientTypes.NotifySubscription | null>(
-      client?.getSubscription(account, domain) ?? null
-    );
-
-  useEffect(() => {
-    if (client) {
-      setSubscription(client.getSubscription(account, domain));
+  const result = useMemo(() => {
+    if (!web3inboxClientData) {
+      return {
+        data: null,
+        isLoading: true,
+        error: null,
+        unsubscribe,
+        subscribe,
+      };
     }
-  }, [subscriptionsTrigger, account, client, domain]);
 
-  return { subscription };
+    if (clientError) {
+      return {
+        data: null,
+        isLoading: false,
+        error: clientError,
+        unsubscribe,
+        subscribe,
+      };
+    }
+
+    if (error) {
+      return {
+        data: null,
+        isLoading: false,
+        error: {
+          message: error,
+        },
+        unsubscribe,
+        subscribe,
+      };
+    }
+
+    return {
+      data: {
+        isSubscribing,
+        isUnsubscribing,
+        subscription,
+        isSubscribed: Boolean(subscription),
+      },
+      isLoading: false,
+      error: null,
+      unsubscribe,
+      subscribe,
+    };
+  }, [web3inboxClientData, error, clientError]);
+
+  return result;
 };
 
 /**
@@ -127,48 +209,107 @@ export const useSubscription = (account?: string, domain?: string) => {
  *
  * @param {string} [account] - Account to get subscriptions from, defaulted to current account
  */
-export const useAllSubscriptions = (account?: string) => {
-  const client = useWeb3InboxClient();
+export const useAllSubscriptions = (
+  account?: string
+): HooksReturn<{
+  subscriptions: NotifyClientTypes.NotifySubscription[];
+}> => {
+  const { data: web3inboxClientData, error } = useWeb3InboxClient();
   const { subscriptions: subscriptionsTrigger } = useSubscriptionState();
   const [subscriptions, setSubscriptions] = useState<
     NotifyClientTypes.NotifySubscription[]
   >([]);
 
   useEffect(() => {
-    if (client) {
-      setSubscriptions(client.getSubscriptions(account));
+    if (web3inboxClientData?.client) {
+      setSubscriptions(web3inboxClientData?.client.getSubscriptions(account));
     }
-  }, [subscriptionsTrigger, account, client]);
+  }, [subscriptionsTrigger, account, web3inboxClientData]);
 
-  return { subscriptions };
+  const result = useMemo(() => {
+    if (!web3inboxClientData) {
+      return {
+        data: null,
+        isLoading: true,
+        error: null,
+      };
+    }
+
+    if (error) {
+      return { data: null, isLoading: false, error };
+    }
+
+    return { data: { subscriptions }, isLoading: false, error: null };
+  }, [web3inboxClientData, error]);
+
+  return result;
 };
 
-export const useSubscriptionScopes = (account?: string, domain?: string) => {
-  const client = useWeb3InboxClient();
+export const useSubscriptionScopes = (
+  account?: string,
+  domain?: string
+): HooksReturn<
+  { scopes: NotifyClientTypes.ScopeMap },
+  {
+    updateScopes: (scope: string[]) => Promise<boolean>;
+  }
+> => {
+  const { data: web3inboxClientData, error: clientError } =
+    useWeb3InboxClient();
   const { subscriptions: subscriptionsTrigger } = useSubscriptionState();
   const [subScopes, setSubScopes] = useState<NotifyClientTypes.ScopeMap>(
-    client?.getNotificationTypes(account) ?? {}
+    web3inboxClientData?.client.getNotificationTypes(account) ?? {}
   );
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    if (client) {
-      setSubScopes(client.getNotificationTypes(account, domain));
+    if (web3inboxClientData?.client) {
+      setSubScopes(
+        web3inboxClientData?.client.getNotificationTypes(account, domain)
+      );
     }
-  }, [client, account, subscriptionsTrigger, domain]);
+  }, [web3inboxClientData, account, subscriptionsTrigger, domain]);
 
   const updateScopes = useCallback(
     (scope: string[]) => {
-      if (client) {
-        return client.update(scope, account, domain);
+      if (web3inboxClientData?.client) {
+        return web3inboxClientData?.client.update(scope, account, domain);
       } else {
-        console.error(
+        setError(
           "Trying to update scope before Web3Inbox Client was initialized "
         );
         return Promise.resolve(false);
       }
     },
-    [client, account, domain]
+    [web3inboxClientData, account, domain]
   );
 
-  return { scopes: subScopes, updateScopes };
+  const result = useMemo(() => {
+    if (!web3inboxClientData) {
+      return { data: null, error: null, isLoading: true, updateScopes };
+    }
+
+    if (clientError) {
+      return { data: null, error: clientError, isLoading: false, updateScopes };
+    }
+
+    if (error) {
+      return {
+        data: null,
+        error: { message: error },
+        isLoading: false,
+        updateScopes,
+      };
+    }
+
+    return {
+      data: { scopes: subScopes },
+      error: null,
+      isLoading: false,
+      updateScopes,
+    };
+  }, [web3inboxClientData, clientError, error]);
+
+  return result;
 };
